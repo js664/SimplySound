@@ -223,6 +223,10 @@ export default function DesktopApp() {
   }, [activeSection]);
   useEffect(() => () => { clearTimeout(masterTimer.current); clearTimeout(micGainTimer.current); }, []);
   useEffect(() => { if (!toast) return; const timer = setTimeout(() => setToast(''), 3500); return () => clearTimeout(timer); }, [toast]);
+  useEffect(() => {
+    const unsubscribe = window.SimplySoundDesktop?.onSoundboardLaunchError?.(message => setToast(message));
+    return () => unsubscribe?.();
+  }, []);
 
   async function patchSettings(patch) {
     try {
@@ -396,7 +400,7 @@ export default function DesktopApp() {
           <div className="qr-frame">{wifiUrl && !wifiUrl.includes('127.0.0.1') ? <img src={`/api/phone/qr?v=${qrVersion}`} alt="Scan with your phone for Wi-Fi/LAN access"/> : <div className="qr-unavailable"><Icon name="phone" size={28}/><span>{settings.lanAccess ? 'Waiting for Wi-Fi' : 'Wi-Fi access is off'}</span></div>}<span>Scan on your Wi-Fi</span></div>
           <div className="connect-main">
             <div className="connect-title"><h2>Your phone. Your remote.</h2><p>Scan the code to play sounds from your phone.</p></div>
-            <div className={`connection-segment ${selectedConnection === 'tailscale' ? 'is-tailscale' : ''}`} aria-label="Phone link network"><span className="segment-selection"/><button type="button" aria-pressed={selectedConnection === 'wifi'} onClick={() => setConnectionChoice('wifi')}>Wi-Fi</button><button type="button" aria-pressed={selectedConnection === 'tailscale'} disabled={!tailscaleUrl} onClick={() => setConnectionChoice('tailscale')}>Tailscale</button></div>
+            <div className={`connection-segment ${selectedConnection === 'tailscale' ? 'is-tailscale' : ''}`} role="group" aria-label="Phone link network"><span className="segment-selection"/><button type="button" aria-pressed={selectedConnection === 'wifi'} onClick={() => setConnectionChoice('wifi')}>Wi-Fi</button><button type="button" aria-pressed={selectedConnection === 'tailscale'} disabled={!tailscaleUrl} onClick={() => setConnectionChoice('tailscale')}>Tailscale</button></div>
             <div className="phone-link-field"><a href={selectedPhoneUrl || undefined} target="_blank" rel="noreferrer" title="Open phone soundboard">{selectedPhoneUrl || (settings.lanAccess ? 'Waiting for a network…' : 'Enable Wi-Fi in Phone access')}</a><button onClick={() => copy(selectedPhoneUrl, selectedConnection === 'wifi' ? 'Wi-Fi' : 'Tailscale')} disabled={!selectedPhoneUrl} aria-label="Copy phone link" title="Copy link"><Icon name="copy" size={15}/></button></div>
           </div>
         </section>
@@ -406,8 +410,8 @@ export default function DesktopApp() {
           <button type="button" className="summary-row" onClick={() => setActiveSection('audio')}><span className="summary-label"><Icon name="volume" size={17}/><span>Local monitoring</span></span><strong>{settings.monitorLocally ? status?.monitorEndpoint || 'Windows default' : 'Off'}<Icon name="chevron" size={14}/></strong></button>
         </div>
         <h2 className="group-label">Connection</h2>
-        <div className="overview-summary" aria-label="Connection settings">
-          <div className="summary-row port-row"><span>Web UI port</span>{editingPort ? <div className="port-edit"><input autoFocus type="number" min="1024" max="65535" value={portDraft} onChange={event => setPortDraft(event.target.value)} onKeyDown={event => { if (event.key === 'Enter') applyPort(); if (event.key === 'Escape') setEditingPort(false); }}/><button disabled={busy} onClick={applyPort}>{busy ? 'Saving…' : 'Apply'}</button></div> : <button className="port-value" onClick={() => { setPortDraft(String(settings.port)); setEditingPort(true); }} aria-label={`Change web UI port, currently ${port}`}><strong>{port}</strong><span>Edit</span></button>}</div>
+          <div className="overview-summary" aria-label="Connection settings">
+          <div className="summary-row port-row"><span>Web UI port</span>{editingPort ? <div className="port-edit"><input autoFocus aria-label="Web UI port" inputMode="numeric" type="number" min="1024" max="65535" value={portDraft} onChange={event => setPortDraft(event.target.value)} onKeyDown={event => { if (event.key === 'Enter') applyPort(); if (event.key === 'Escape') setEditingPort(false); }}/><button disabled={busy} onClick={applyPort}>{busy ? 'Saving…' : 'Apply'}</button></div> : <button className="port-value" onClick={() => { setPortDraft(String(settings.port)); setEditingPort(true); }} aria-label={`Change web UI port, currently ${port}`}><strong>{port}</strong><span>Edit</span></button>}</div>
           <button type="button" className="summary-row" onClick={() => setActiveSection('network')}><span>Network & privacy</span><strong>{settings.pairingEnabled ? 'Pairing enabled' : 'Manage access'}<Icon name="chevron" size={14}/></strong></button>
         </div>
         </>}

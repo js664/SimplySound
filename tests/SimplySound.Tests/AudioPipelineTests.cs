@@ -23,6 +23,21 @@ public sealed class AudioPipelineTests
     }
 
     [Fact]
+    public void AudioDispatcherDrainsQueuedActionsAndIgnoresCallbacksAfterDispose()
+    {
+        var context = new AudioExecutionContext();
+        var completed = 0;
+        context.Post(() => Interlocked.Increment(ref completed));
+
+        context.Dispose();
+        context.Dispose();
+        context.Post(() => Interlocked.Increment(ref completed));
+
+        Assert.Equal(1, Volatile.Read(ref completed));
+        Assert.Throws<ObjectDisposedException>(() => context.Invoke(() => true));
+    }
+
+    [Fact]
     public void DeviceNameCacheAvoidsRepeatedEndpointLookupsAndInvalidatesByDevice()
     {
         var cache = new DeviceNameCache(TimeSpan.FromMilliseconds(5000));

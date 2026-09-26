@@ -9,6 +9,7 @@ public sealed class AudioExecutionContext : IDisposable
 {
     private readonly BlockingCollection<Action> _queue = new();
     private readonly Thread _thread;
+    private int _disposeStarted;
     public bool IsCurrent => Thread.CurrentThread == _thread;
     public AudioExecutionContext()
     {
@@ -33,14 +34,28 @@ public sealed class AudioExecutionContext : IDisposable
     public void Invoke(Action action) => Invoke(() => { action(); return true; });
     public void Post(Action action)
     {
-        if (_queue.IsAddingCompleted) return;
-        try { _queue.Add(() => { try { action(); } catch (Exception ex) { Log.Error(ex, "Audio queue action failed"); } }); }
+        ArgumentNullException.ThrowIfNull(action);
+        try
+        {
+            if (_queue.IsAddingCompleted) return;
+            _queue.Add(() => { try { action(); } catch (Exception ex) { Log.Error(ex, "Audio queue action failed"); } });
+        }
         catch (InvalidOperationException) { }
     }
     public void Dispose()
     {
+        if (Interlocked.Exchange(ref _disposeStarted, 1) != 0) return;
         _queue.CompleteAdding();
-        if (!IsCurrent) _thread.Join(TimeSpan.FromSeconds(3));
-        _queue.Dispose();
+        if (IsCurrent)
+        {
+            _ = Task.Run(() => { _thread.Join(); _queue.Dispose(); });
+            return;
+        }
+        if (_thread.Join(TimeSpan.FromSeconds(3))) _queue.Dispose();
+        else
+        {
+            Log.Warning("Audio dispatcher is still draining work during shutdown; its queue will be disposed after the thread exits");
+            _ = Task.Run(() => { _thread.Join(); _queue.Dispose(); });
+        }
     }
 }

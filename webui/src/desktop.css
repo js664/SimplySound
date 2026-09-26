@@ -591,3 +591,12 @@
   .options-only .welcome-dialog,.options-only .welcome-content>* { animation: none !important; }
   .options-only .welcome-progress-step i,.options-only .welcome-choice,.options-only .welcome-firewall-button,.options-only .welcome-next { transition-duration: .01ms !important; }
 }
+@media (max-height: 700px) and (min-width: 561px) {
+  .options-only .welcome-overlay { padding-block: 16px; }
+  .options-only .welcome-dialog { max-height: calc(100dvh - 32px); }
+  .options-only .welcome-progress { padding-top: 12px; }
+  .options-only .welcome-content { padding-top: 17px; padding-bottom: 14px; }
+  .options-only .welcome-ready-mark { margin-bottom: 10px; }
+  .options-only .welcome-finish-card { margin-top: 14px; padding-block: 10px; }
+  .options-only .welcome-hint { margin-top: 8px; }
+}

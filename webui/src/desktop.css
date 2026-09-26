@@ -587,6 +587,26 @@
 .options-only .welcome-choice { transition: background .2s ease,border-color .2s ease,transform .2s cubic-bezier(.2,.8,.2,1); }
 .options-only .welcome-firewall-button,.options-only .welcome-next { transition: background .18s ease,box-shadow .2s ease,transform .2s cubic-bezier(.2,.8,.2,1); }
 .options-only .open-soundboard:disabled { opacity: .56; cursor: wait; }
+
+/* Keep desktop actions and the first-run wizard on the same readable blue. */
+.desktop-app.options-only {
+  --desk-blue: #2869dd;
+  --desk-blue-hover: #2d6fe5;
+}
+.options-only .desktop-switch.on { background: var(--desk-blue); }
+.options-only .open-soundboard {
+  justify-content: center;
+  border: 1px solid #4a86f5;
+  color: #fff;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.options-only .open-soundboard:hover:not(:disabled) { background: var(--desk-blue-hover); border-color: #6da0ff; }
+.options-only .open-soundboard:disabled { opacity: .72; }
+.options-only .welcome-firewall-button,.options-only .welcome-next { color: #fff !important; }
+.options-only .welcome-firewall-button:hover:not(:disabled),.options-only .welcome-next:hover:not(:disabled) { background: var(--welcome-blue-hover); }
 @media (prefers-reduced-motion: reduce) {
   .options-only .welcome-dialog,.options-only .welcome-content>* { animation: none !important; }
   .options-only .welcome-progress-step i,.options-only .welcome-choice,.options-only .welcome-firewall-button,.options-only .welcome-next { transition-duration: .01ms !important; }

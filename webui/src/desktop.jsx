@@ -113,6 +113,7 @@ export default function DesktopApp() {
   const [qrVersion, setQrVersion] = useState(0);
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState('');
+  const [launchingSoundboard, setLaunchingSoundboard] = useState(false);
   const [appVersion, setAppVersion] = useState(null);
   const [updateState, setUpdateState] = useState('checking');
   const [latestVersion, setLatestVersion] = useState(null);
@@ -337,6 +338,17 @@ export default function DesktopApp() {
     try { await window.SimplySoundDesktop?.openRelease(releaseUrl); }
     catch { setToast('Could not open the GitHub release page.'); }
   }
+  async function openSoundboard() {
+    const launch = window.SimplySoundDesktop?.openSoundboard;
+    if (!launch) { setToast('Open SimplySound to launch your soundboard.'); return; }
+    setLaunchingSoundboard(true);
+    try {
+      await launch();
+      setToast('Opening your soundboard in the browser…');
+    } catch (error) {
+      setToast(error?.message || 'Could not open the soundboard in your default browser.');
+    } finally { setLaunchingSoundboard(false); }
+  }
 
   const appClass = 'desktop-app options-only';
   const wifiUrl = status?.wifiUrl || status?.url;
@@ -390,7 +402,7 @@ export default function DesktopApp() {
           </div>
           {sectionCopy[1] && <p>{sectionCopy[1]}</p>}
         </div>
-        {activeSection === 'overview' && <a className="open-soundboard" aria-label="Open soundboard" href={`http://127.0.0.1:${port}/`} target="_blank" rel="noreferrer"><span>Open soundboard</span><Icon name="arrow" size={14}/></a>}
+        {activeSection === 'overview' && <button type="button" className="open-soundboard" aria-label="Open soundboard" aria-busy={launchingSoundboard} disabled={launchingSoundboard} onClick={openSoundboard}><span>{launchingSoundboard ? 'Opening…' : 'Open soundboard'}</span><Icon name="arrow" size={14}/></button>}
       </div>
       {!settings ? <div className={`desktop-loading ${loadError ? 'has-error' : ''}`} role="status" aria-live="polite">
         {loadError ? <><span>{loadError}</span><button type="button" onClick={() => refresh().catch(() => {})}>Try again</button></> : 'Connecting to SimplySound…'}

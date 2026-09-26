@@ -22,6 +22,37 @@ public sealed class AudioPipelineTests
         Assert.True(resource.Disposed);
     }
 
+    [Fact]
+    public void DeviceNameCacheAvoidsRepeatedEndpointLookupsAndInvalidatesByDevice()
+    {
+        var cache = new DeviceNameCache(TimeSpan.FromMilliseconds(5000));
+        var defaultLookups = 0;
+        var selectedLookups = 0;
+
+        Assert.Equal("Default speakers", cache.Get(null, 100, () => { defaultLookups++; return "Default speakers"; }));
+        Assert.Equal("Default speakers", cache.Get(null, 4999, () => { defaultLookups++; return "Changed speakers"; }));
+        Assert.Equal("USB headset", cache.Get("endpoint-a", 4999, () => { selectedLookups++; return "USB headset"; }));
+        Assert.Equal("USB headset", cache.Get("endpoint-a", 5000, () => { selectedLookups++; return "Changed headset"; }));
+        Assert.Equal("Updated speakers", cache.Get(null, 5100, () => { defaultLookups++; return "Updated speakers"; }));
+
+        cache.Invalidate("endpoint-a");
+        Assert.Equal("Renamed headset", cache.Get("endpoint-a", 5101, () => { selectedLookups++; return "Renamed headset"; }));
+        cache.Invalidate(null);
+        Assert.Equal("New default speakers", cache.Get(null, 5102, () => { defaultLookups++; return "New default speakers"; }));
+        Assert.Equal(3, defaultLookups);
+        Assert.Equal(2, selectedLookups);
+    }
+
+    [Fact]
+    public void MonitorReadinessReusesOnlyThePreparedDeviceAndSelection()
+    {
+        Assert.True(MonitorStreamReadiness.IsCurrent(true, null, null, "monitor-speakers", "microphone", true));
+        Assert.True(MonitorStreamReadiness.IsCurrent(true, null, null, "microphone", "microphone", false));
+        Assert.False(MonitorStreamReadiness.IsCurrent(false, null, null, "monitor-speakers", "microphone", true));
+        Assert.False(MonitorStreamReadiness.IsCurrent(true, "monitor-a", "monitor-b", "monitor-speakers", "microphone", true));
+        Assert.False(MonitorStreamReadiness.IsCurrent(true, null, null, "monitor-speakers", "microphone", false));
+    }
+
     [Theory]
     [InlineData("Control+Alt+k", "Control+Alt+K")]
     [InlineData("Control+Alt+7", "Control+Alt+7")]
@@ -106,12 +137,20 @@ public sealed class AudioPipelineTests
     [Fact]
     public void GainChangesAreAppliedToSamplesAsTheyAreRead()
     {
-        var source = new FloatSource(WaveFormat.CreateIeeeFloatWaveFormat(48000, 1), [1f, -0.5f, 0.25f]);
+        var source = new FloatSource(WaveFormat.CreateIeeeFloatWaveFormat(1000, 1), [1f, -0.5f, 0.25f]);
         var gain = new GainSampleProvider(source, 0.75f);
         var buffer = new float[3];
         Assert.Equal(3, gain.Read(buffer, 0, 3));
         Assert.Equal([0.75f, -0.375f, 0.1875f], buffer);
         gain.Gain = 0.2f;
+        source.Reset([1f, -1f, 1f, -1f, 1f]);
+        var transition = new float[5];
+        Assert.Equal(5, gain.Read(transition, 0, transition.Length));
+        Assert.Equal(0.64f, transition[0], 5);
+        Assert.Equal(-0.53f, transition[1], 5);
+        Assert.Equal(0.42f, transition[2], 5);
+        Assert.Equal(-0.31f, transition[3], 5);
+        Assert.Equal(0.2f, transition[4], 5);
         source.Reset([1f, -1f]);
         Assert.Equal(2, gain.Read(buffer, 0, 2));
         Assert.Equal([0.2f, -0.2f], buffer[..2]);
@@ -159,15 +198,26 @@ public sealed class AudioPipelineTests
     }
 
     [Fact]
+    public void MultichannelDownmixLimitsCorrelatedPeaksWithoutChangingNormalLevels()
+    {
+        var provider = new ChannelMappingSampleProvider(
+            new FloatSource(WaveFormat.CreateIeeeFloatWaveFormat(48000, 6), [1f, 1f, 1f, 1f, 1f, 1f]), 2);
+        var stereo = new float[2];
+
+        Assert.Equal(2, provider.Read(stereo, 0, stereo.Length));
+        Assert.All(stereo, sample => Assert.InRange(sample, .97f, .98f));
+    }
+
+    [Fact]
     public void EightChannelDownmixIncludesBackAndSidePairs()
     {
         var surround71 = new ChannelMappingSampleProvider(
-            new FloatSource(WaveFormat.CreateIeeeFloatWaveFormat(48000, 8), [.1f, .2f, .3f, .95f, .4f, .5f, .6f, .7f]), 2);
+            new FloatSource(WaveFormat.CreateIeeeFloatWaveFormat(48000, 8), [.05f, .1f, .15f, .45f, .2f, .25f, .3f, .35f]), 2);
         var stereo = new float[2];
 
         Assert.Equal(2, surround71.Read(stereo, 0, stereo.Length));
-        Assert.Equal(.1f + (.3f + .4f + .6f) * .70710678f, stereo[0], 5);
-        Assert.Equal(.2f + (.3f + .5f + .7f) * .70710678f, stereo[1], 5);
+        Assert.Equal(.05f + (.15f + .2f + .3f) * .70710678f, stereo[0], 5);
+        Assert.Equal(.1f + (.15f + .25f + .35f) * .70710678f, stereo[1], 5);
     }
 
     [Fact]

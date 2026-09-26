@@ -36,15 +36,45 @@ internal sealed record AudioPipeline(IWaveProvider WaveProvider, GainSampleProvi
 internal sealed class GainSampleProvider(ISampleProvider source, float initialGain) : ISampleProvider, IDisposable
 {
     private float _gain = Math.Clamp(initialGain, 0, 1);
+    private readonly int _channels = Math.Max(1, source.WaveFormat.Channels);
+    private readonly int _rampFrames = Math.Max(1, source.WaveFormat.SampleRate / 200);
+    private float _currentGain = Math.Clamp(initialGain, 0, 1);
+    private float _rampTarget = Math.Clamp(initialGain, 0, 1);
+    private float _rampStep;
+    private int _rampFramesRemaining;
     public WaveFormat WaveFormat => source.WaveFormat;
     public float Gain { get => Volatile.Read(ref _gain); set => Volatile.Write(ref _gain, Math.Clamp(value, 0, 1)); }
 
     public int Read(float[] buffer, int offset, int count)
     {
         var read = source.Read(buffer, offset, count);
-        var gain = Gain;
-        if (gain == 1) return read;
-        for (var i = 0; i < read; i++) buffer[offset + i] *= gain;
+        var target = Gain;
+        if (target != _rampTarget)
+        {
+            _rampTarget = target;
+            _rampStep = (target - _currentGain) / _rampFrames;
+            _rampFramesRemaining = _rampFrames;
+        }
+
+        if (_rampFramesRemaining == 0 && target == _currentGain)
+        {
+            if (target == 1) return read;
+            for (var i = 0; i < read; i++) buffer[offset + i] *= target;
+            return read;
+        }
+
+        var frames = read / _channels;
+        for (var frame = 0; frame < frames; frame++)
+        {
+            if (_rampFramesRemaining > 0)
+            {
+                _currentGain += _rampStep;
+                if (--_rampFramesRemaining == 0) _currentGain = _rampTarget;
+            }
+            var frameOffset = offset + frame * _channels;
+            for (var channel = 0; channel < _channels; channel++) buffer[frameOffset + channel] *= _currentGain;
+        }
+        for (var i = offset + frames * _channels; i < offset + read; i++) buffer[i] *= _currentGain;
         return read;
     }
     public void Dispose() { if (source is IDisposable disposable) disposable.Dispose(); }
@@ -145,8 +175,8 @@ internal sealed class ChannelMappingSampleProvider : ISampleProvider, IDisposabl
                     left += center;
                     right += center;
                 }
-                buffer[outputOffset] = left;
-                buffer[outputOffset + 1] = right;
+                buffer[outputOffset] = LimitDownmixPeak(left);
+                buffer[outputOffset + 1] = LimitDownmixPeak(right);
             }
             else
             {
@@ -155,6 +185,15 @@ internal sealed class ChannelMappingSampleProvider : ISampleProvider, IDisposabl
             }
         }
         return readFrames * WaveFormat.Channels;
+    }
+    private static float LimitDownmixPeak(float sample)
+    {
+        const float threshold = .85f;
+        const float ceiling = .98f;
+        var magnitude = MathF.Abs(sample);
+        if (magnitude <= threshold) return sample;
+        var limited = threshold + (ceiling - threshold) * MathF.Tanh((magnitude - threshold) / (ceiling - threshold));
+        return MathF.CopySign(limited, sample);
     }
     public void Dispose()
     {

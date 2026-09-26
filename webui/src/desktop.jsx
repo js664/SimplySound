@@ -126,7 +126,6 @@ export default function DesktopApp() {
   const [activeSection, setActiveSection] = useState('overview');
   const [connectionChoice, setConnectionChoice] = useState('wifi');
   const [setupOpen, setSetupOpen] = useState(false);
-  const [openingSoundboard, setOpeningSoundboard] = useState(false);
   const [setupStep, setSetupStep] = useState(0);
   const [setupFirewallState, setSetupFirewallState] = useState('idle');
   const [setupError, setSetupError] = useState('');
@@ -138,8 +137,8 @@ export default function DesktopApp() {
   const welcomeDialogRef = useRef(null);
 
   async function refresh() {
-    const [settingsResult, devicesResult, statusResult] = await Promise.allSettled([
-      request('/api/settings'), request('/api/audio/devices'), request('/api/status'),
+    const [settingsResult, statusResult] = await Promise.allSettled([
+      request('/api/settings'), request('/api/status'),
     ]);
     if (settingsResult.status === 'rejected') {
       const message = settingsResult.reason?.message || 'The settings service did not respond.';
@@ -152,12 +151,6 @@ export default function DesktopApp() {
     setSettings(nextSettings);
     setPortDraft(String(nextSettings.port));
     setLoadError('');
-    if (devicesResult.status === 'fulfilled') {
-      setDevices(devicesResult.value || []);
-      setDeviceLoadError(false);
-    } else {
-      setDeviceLoadError(true);
-    }
     if (statusResult.status === 'fulfilled') setStatus(statusResult.value);
   }
   const refreshDevices = useCallback(async () => {
@@ -333,21 +326,6 @@ export default function DesktopApp() {
     try { await window.SimplySoundDesktop?.completeSetup?.(); setSetupOpen(false); setSetupError(''); }
     catch (error) { setSetupError(error.message || 'Could not save setup progress.'); }
   }
-  async function openSoundboard() {
-    const bridge = window.SimplySoundDesktop;
-    if (!bridge?.openSoundboard) {
-      setToast('Open the soundboard from the SimplySound desktop app.');
-      return;
-    }
-    setOpeningSoundboard(true);
-    try {
-      await bridge.openSoundboard();
-    } catch (error) {
-      setToast(error.message || 'Could not open the soundboard in your browser.');
-    } finally {
-      setOpeningSoundboard(false);
-    }
-  }
   function openSetup() {
     setSetupStep(0); setSetupOpen(true); setSetupError(''); setShowManualCommand(false); setManualCommand('');
   }
@@ -408,7 +386,7 @@ export default function DesktopApp() {
           </div>
           {sectionCopy[1] && <p>{sectionCopy[1]}</p>}
         </div>
-        {activeSection === 'overview' && <button type="button" className="open-soundboard" aria-label="Open soundboard in your browser" onClick={openSoundboard} disabled={openingSoundboard}><span>{openingSoundboard ? 'Opening soundboard…' : 'Open soundboard'}</span><Icon name="arrow" size={14}/></button>}
+        {activeSection === 'overview' && <a className="open-soundboard" aria-label="Open soundboard" href={`http://127.0.0.1:${port}/`} target="_blank" rel="noreferrer"><span>Open soundboard</span><Icon name="arrow" size={14}/></a>}
       </div>
       {!settings ? <div className={`desktop-loading ${loadError ? 'has-error' : ''}`} role="status" aria-live="polite">
         {loadError ? <><span>{loadError}</span><button type="button" onClick={() => refresh().catch(() => {})}>Try again</button></> : 'Connecting to SimplySound…'}

@@ -16,13 +16,25 @@ internal static class AudioResourceCleanup
     }
 }
 
+internal static class MonitorStreamReadiness
+{
+    public static bool IsCurrent(bool prepared, string? preparedSelectionId, string? selectedId, string? preparedEndpointId, string? mainOutputEndpointId, bool monitorOutputPlaying)
+        => prepared
+            && string.Equals(preparedSelectionId, selectedId, StringComparison.Ordinal)
+            && (string.Equals(preparedEndpointId, mainOutputEndpointId, StringComparison.Ordinal) || monitorOutputPlaying);
+}
+
 public sealed class AudioDeviceService(AudioExecutionContext context) : IDisposable
 {
+    private static readonly TimeSpan DeviceNameCacheLifetime = TimeSpan.FromSeconds(30);
+    private readonly DeviceNameCache _deviceNameCache = new(DeviceNameCacheLifetime);
     private MMDeviceEnumerator? _enumerator;
+    private string? _defaultEndpointId;
     private MMDeviceEnumerator Enumerator => _enumerator ??= new MMDeviceEnumerator();
     public IReadOnlyList<DeviceInfo> Enumerate(string? selectedId)
     {
         if (!context.IsCurrent) return context.Invoke(() => Enumerate(selectedId));
+        _deviceNameCache.Clear();
         var result = new List<DeviceInfo>();
         foreach (var d in Enumerator.EnumerateAudioEndPoints(DataFlow.Render, DeviceState.All))
         {
@@ -61,6 +73,11 @@ public sealed class AudioDeviceService(AudioExecutionContext context) : IDisposa
                 catch (Exception ex) when (ex is NAudio.MmException or COMException or InvalidOperationException) { }
             }
             var defaultId = defaultDevice?.ID;
+            if (followsWindowsDefault && !string.Equals(_defaultEndpointId, defaultId, StringComparison.Ordinal))
+            {
+                _defaultEndpointId = defaultId;
+                _deviceNameCache.Invalidate(null);
+            }
             var checkId = currentId ?? defaultId;
             var active = false;
             if (checkId is not null)
@@ -97,16 +114,24 @@ public sealed class AudioDeviceService(AudioExecutionContext context) : IDisposa
     public string? DeviceName(string? endpointId)
     {
         if (!context.IsCurrent) return context.Invoke(() => DeviceName(endpointId));
-        try
+        return _deviceNameCache.Get(endpointId, Environment.TickCount64, () =>
         {
-            using var device = endpointId is null ? DefaultRender() : Enumerator.GetDevice(endpointId);
-            return device.FriendlyName;
-        }
-        catch (Exception ex) when (ex is NAudio.MmException or COMException or InvalidOperationException or ArgumentException)
-        {
-            Log.Debug(ex, "Could not resolve playback endpoint name {EndpointId}", endpointId);
-            return null;
-        }
+            try
+            {
+                using var device = endpointId is null ? DefaultRender() : Enumerator.GetDevice(endpointId);
+                return device.FriendlyName;
+            }
+            catch (Exception ex) when (ex is NAudio.MmException or COMException or InvalidOperationException or ArgumentException)
+            {
+                Log.Debug(ex, "Could not resolve playback endpoint name {EndpointId}", endpointId);
+                return null;
+            }
+        });
+    }
+    public void InvalidateDeviceName(string? endpointId)
+    {
+        if (!context.IsCurrent) { context.Invoke(() => InvalidateDeviceName(endpointId)); return; }
+        _deviceNameCache.Invalidate(endpointId);
     }
     public void Dispose() => context.Invoke(() => { AudioResourceCleanup.Dispose(_enumerator, "the audio device enumerator"); _enumerator = null; });
 }
@@ -130,6 +155,9 @@ public sealed class AudioEngine(AudioDeviceService devices, Storage storage, Aud
     private int _tickPending;
     private string? _monitorEndpointId;
     private string? _monitorEndpointName;
+    private string? _preparedMonitorSelectionId;
+    private string? _preparedMonitorEndpointId;
+    private bool _monitorPrepared;
     private Guid? _soundId;
     private string? _selectedId;
     private double _endSeconds;
@@ -192,6 +220,26 @@ public sealed class AudioEngine(AudioDeviceService devices, Storage storage, Aud
         if (stopped is not null) Changed?.Invoke("sound-stopped", new { id = stopped });
         Changed?.Invoke("audio-device", new { status = Status, endpoint = EndpointName });
     }
+    public void PrepareMonitoring(bool enabled, string? monitorEndpointId)
+    {
+        if (!context.IsCurrent)
+        {
+            context.Post(() => PrepareMonitoring(enabled, monitorEndpointId));
+            return;
+        }
+
+        lock (_gate)
+        {
+            if (!enabled)
+            {
+                StopMonitorLocked();
+                return;
+            }
+            if (_device is null) return;
+            EnsureMonitorOutputLocked(monitorEndpointId);
+        }
+    }
+
     public void Play(Sound sound, float masterVolume, bool monitorLocally = false, float micOutputGain = 0.025f, string? monitorEndpointId = null, bool useVirtualMicHeadroom = false)
     {
         if (!context.IsCurrent) { context.Invoke(() => Play(sound, masterVolume, monitorLocally, micOutputGain, monitorEndpointId, useVirtualMicHeadroom)); return; }
@@ -230,26 +278,15 @@ public sealed class AudioEngine(AudioDeviceService devices, Storage storage, Aud
                 {
                     try
                     {
-                        using var monitorTarget = string.IsNullOrWhiteSpace(monitorEndpointId)
-                            ? devices.DefaultRender()
-                            : devices.Resolve(monitorEndpointId) ?? throw new InvalidOperationException("The selected local monitor device is unavailable.");
-                        if (_monitorDevice is null || _monitorEndpointId != monitorTarget.ID)
-                        {
-                            StopMonitorLocked();
-                            if (monitorTarget.ID != _device.ID)
-                            {
-                                _monitorDevice = devices.Resolve(monitorTarget.ID);
-                                if (_monitorDevice is null) throw new InvalidOperationException("The default playback device is unavailable.");
-                                _monitorEndpointId = _monitorDevice.ID;
-                                _monitorEndpointName = _monitorDevice.FriendlyName;
-                                _monitorSource = new SwitchingWaveProvider(_monitorDevice.AudioClient.MixFormat);
-                                _monitorOutput = new WasapiOut(_monitorDevice, AudioClientShareMode.Shared, false, 10);
-                                _monitorOutput.Init(_monitorSource);
-                                _monitorOutput.Play();
-                            }
-                        }
-                        else _monitorEndpointName = _monitorDevice.FriendlyName;
-                        if (_monitorSource is not null && _monitorDevice is not null)
+                        var prepared = MonitorStreamReadiness.IsCurrent(
+                            _monitorPrepared,
+                            _preparedMonitorSelectionId,
+                            monitorEndpointId,
+                            _preparedMonitorEndpointId,
+                            _device.ID,
+                            _monitorOutput?.PlaybackState == NAudio.Wave.PlaybackState.Playing);
+                        if (!prepared) EnsureMonitorOutputLocked(monitorEndpointId);
+                        if (_monitorPrepared && _preparedMonitorEndpointId != _device.ID && _monitorSource is not null && _monitorDevice is not null)
                         {
                             AudioFileReader? monitorReader = new AudioFileReader(path) { Volume = 1 };
                             AudioPipeline monitorPipeline;
@@ -287,6 +324,60 @@ public sealed class AudioEngine(AudioDeviceService devices, Storage storage, Aud
             }
         }
         Changed?.Invoke("sound-started", new { id = sound.Id });
+    }
+
+    private bool EnsureMonitorOutputLocked(string? monitorEndpointId)
+    {
+        MMDevice? target = null;
+        try
+        {
+            target = string.IsNullOrWhiteSpace(monitorEndpointId)
+                ? devices.DefaultRender()
+                : devices.Resolve(monitorEndpointId) ?? throw new InvalidOperationException("The selected local monitor device is unavailable.");
+
+            if (_monitorDevice is not null && _monitorEndpointId == target.ID && _monitorOutput is not null && _monitorSource is not null)
+            {
+                _monitorEndpointName = _monitorDevice.FriendlyName;
+                if (_monitorOutput.PlaybackState == NAudio.Wave.PlaybackState.Playing)
+                {
+                    MarkMonitorPrepared(monitorEndpointId, target.ID);
+                    return true;
+                }
+            }
+
+            if (target.ID == _device?.ID)
+            {
+                StopMonitorLocked();
+                _monitorEndpointName = target.FriendlyName;
+                MarkMonitorPrepared(monitorEndpointId, target.ID);
+                return false;
+            }
+
+            StopMonitorLocked();
+            _monitorDevice = devices.Resolve(target.ID) ?? throw new InvalidOperationException("The local monitor device is unavailable.");
+            _monitorEndpointId = _monitorDevice.ID;
+            _monitorEndpointName = _monitorDevice.FriendlyName;
+            _monitorSource = new SwitchingWaveProvider(_monitorDevice.AudioClient.MixFormat);
+            _monitorOutput = new WasapiOut(_monitorDevice, AudioClientShareMode.Shared, false, 10);
+            _monitorOutput.Init(_monitorSource);
+            _monitorOutput.Play();
+            MarkMonitorPrepared(monitorEndpointId, target.ID);
+            Log.Information("Local soundboard monitor prepared: {Endpoint}", _monitorEndpointName);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Log.Warning(ex, "Could not prepare the local soundboard monitor; microphone injection remains available");
+            StopMonitorLocked();
+            return false;
+        }
+        finally { AudioResourceCleanup.Dispose(target, "a monitor endpoint lookup"); }
+    }
+    private void MarkMonitorPrepared(string? selectionId, string endpointId)
+    {
+        _preparedMonitorSelectionId = selectionId;
+        _preparedMonitorEndpointId = endpointId;
+        _monitorPrepared = true;
     }
     public void Stop()
     {
@@ -356,6 +447,7 @@ public sealed class AudioEngine(AudioDeviceService devices, Storage storage, Aud
         AudioResourceCleanup.Dispose(output, "the local monitor output");
         AudioResourceCleanup.Dispose(_monitorDevice, "the local monitor endpoint"); _monitorDevice = null; _monitorEndpointName = null;
         _monitorEndpointId = null;
+        _preparedMonitorSelectionId = null; _preparedMonitorEndpointId = null; _monitorPrepared = false;
     }
     private void DisconnectOutputLocked()
     {

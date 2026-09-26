@@ -11,3 +11,5 @@ electron/.square-icon.png
 dist-electron/
 Web/
 .impeccable/review/
+/.impeccable/electron-overview.png
+/.impeccable/electron-min-overview.png

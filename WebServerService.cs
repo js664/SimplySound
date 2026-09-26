@@ -118,12 +118,38 @@ public sealed class WebServerService(AppCoordinator coordinator, WebSocketHub hu
             var ip = AppCoordinator.NormalizeNetworkAddress(context.Connection.RemoteIpAddress);
             var settings = coordinator.Settings;
             if (!AppCoordinator.CanAccessFromNetwork(ip, settings.LanAccess, settings.TailscaleAccess)) { context.Response.StatusCode = 403; return; }
-            var token = coordinator.Settings.PairingToken;
-            if ((context.Request.Path.StartsWithSegments("/api") || context.Request.Path.StartsWithSegments("/ws")) && !IsPairingAuthorized(ip, token, context.Request.Headers["X-Pairing-Token"], context.Request.Query["token"])) { context.Response.StatusCode = 401; return; }
+            if ((context.Request.Path.StartsWithSegments("/api") || context.Request.Path.StartsWithSegments("/ws")) && !IsPairingAuthorized(ip, settings.PairingToken, context.Request.Headers["X-Pairing-Token"], context.Request.Query["token"])) { context.Response.StatusCode = 401; return; }
             await next();
         });
         app.UseWebSockets(); app.UseDefaultFiles(); app.UseStaticFiles();
-        app.MapGet("/api/status", () => Results.Ok(new { server = "running", activePort = coordinator.ActiveWebPort, audio = coordinator.Audio.Status, endpoint = coordinator.Audio.EndpointName, monitorEnabled = coordinator.Settings.MonitorLocally, monitorEndpoint = coordinator.Settings.MonitorLocally ? coordinator.Devices.DeviceName(coordinator.Settings.MonitorEndpointId) : null, playback = coordinator.Audio.Playback, clients = hub.ClientCount, url = coordinator.PhoneUrl, wifiUrl = coordinator.PhoneUrl, tailscaleUrl = coordinator.TailscalePhoneUrl }));
+        app.MapGet("/api/status", () =>
+        {
+            var settings = coordinator.Settings;
+            var activePort = coordinator.ActiveWebPort;
+            var port = activePort > 0 ? activePort : settings.Port;
+            var lanAddress = coordinator.LanAddress;
+            var wifiUrl = settings.LanAccess && lanAddress != "127.0.0.1"
+                ? AppCoordinator.BuildPhoneUrl(lanAddress, port, settings.PairingToken)
+                : null;
+            var tailscaleAddress = coordinator.TailscaleAddress;
+            var tailscaleUrl = settings.TailscaleAccess && tailscaleAddress is not null
+                ? AppCoordinator.BuildPhoneUrl(tailscaleAddress, port, settings.PairingToken)
+                : null;
+            return Results.Ok(new
+            {
+                server = "running",
+                activePort,
+                audio = coordinator.Audio.Status,
+                endpoint = coordinator.Audio.EndpointName,
+                monitorEnabled = settings.MonitorLocally,
+                monitorEndpoint = settings.MonitorLocally ? coordinator.Devices.DeviceName(settings.MonitorEndpointId) : null,
+                playback = coordinator.Audio.Playback,
+                clients = hub.ClientCount,
+                url = wifiUrl,
+                wifiUrl,
+                tailscaleUrl
+            });
+        });
         app.MapGet("/api/phone/qr", (HttpContext context) =>
         {
             // The desktop QR is deliberately Wi-Fi/LAN only. Tailscale has a separate copyable link.

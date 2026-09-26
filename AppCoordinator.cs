@@ -121,6 +121,7 @@ public sealed class AppCoordinator(Storage storage, SoundLibrary library, AudioE
         library.Changed += (type, value) => Changed?.Invoke(type, value);
         audio.Changed += (type, value) => Changed?.Invoke(type, value);
         audio.Connect(_settings.EndpointId);
+        audio.PrepareMonitoring(_settings.MonitorLocally, _settings.MonitorEndpointId);
         _timer.Change(PlaybackUpdateIntervalMs, PlaybackUpdateIntervalMs);
         _reconnectTimer = new System.Threading.Timer(_ => CheckAudio(), null, 5000, 5000);
         Log.Information("Application started; web dashboard is available on port {Port}", EffectivePort);
@@ -159,6 +160,7 @@ public sealed class AppCoordinator(Storage storage, SoundLibrary library, AudioE
     public AppSettings UpdateSettings(Action<AppSettings> change)
     {
         AppSettings result;
+        bool monitorConfigurationChanged;
         lock (_settingsGate)
         {
             var candidate = Clone(_settings);
@@ -168,9 +170,11 @@ public sealed class AppCoordinator(Storage storage, SoundLibrary library, AudioE
             if (candidate.Port is < 1024 or > 65535) throw new ArgumentException("Port must be between 1024 and 65535.");
             if (candidate.ButtonDensity is not (6 or 9 or 12 or 15 or 20)) throw new ArgumentException("Invalid button density.");
             if (candidate.MaxUploadBytes is < 1024 * 1024 or > 200L * 1024 * 1024) throw new ArgumentException("Upload limit must be between 1 and 200 MB.");
+            monitorConfigurationChanged = candidate.MonitorLocally != _settings.MonitorLocally || !string.Equals(candidate.MonitorEndpointId, _settings.MonitorEndpointId, StringComparison.Ordinal);
             storage.Save(candidate); _settings = candidate; result = Clone(candidate);
         }
         audio.SetMixLevels(result.MasterVolume, result.MicOutputGain, result.UseVirtualMicHeadroom);
+        if (monitorConfigurationChanged) audio.PrepareMonitoring(result.MonitorLocally, result.MonitorEndpointId);
         Changed?.Invoke("settings-changed", AppSettingsView.From(result));
         return result;
     }
@@ -189,20 +193,30 @@ public sealed class AppCoordinator(Storage storage, SoundLibrary library, AudioE
     public void Stop() => audio.Stop();
     public void SelectDevice(string? endpointId)
     {
+        devices.InvalidateDeviceName(endpointId);
         UpdateSettings(s => s.EndpointId = endpointId);
         audio.Connect(endpointId);
+        var settings = Settings;
+        audio.PrepareMonitoring(settings.MonitorLocally, settings.MonitorEndpointId);
     }
-    public void SelectMonitorDevice(string? endpointId) => UpdateSettings(s => s.MonitorEndpointId = endpointId);
+    public void SelectMonitorDevice(string? endpointId)
+    {
+        devices.InvalidateDeviceName(endpointId);
+        UpdateSettings(s => s.MonitorEndpointId = endpointId);
+    }
     private void CheckAudio()
     {
-        if (!Settings.ReconnectAudio) return;
         try
         {
             var settings = Settings;
-            var id = audio.EndpointId;
-            var reconnectState = devices.GetReconnectState(id, settings.EndpointId is null);
-            if (ShouldReconnectAudio(settings.EndpointId is null, id, reconnectState.DefaultEndpointId, reconnectState.CurrentEndpointActive, audio.Status.StartsWith("Connected", StringComparison.Ordinal)))
-            { audio.Connect(settings.EndpointId); return; }
+            if (settings.ReconnectAudio)
+            {
+                var id = audio.EndpointId;
+                var reconnectState = devices.GetReconnectState(id, settings.EndpointId is null);
+                if (ShouldReconnectAudio(settings.EndpointId is null, id, reconnectState.DefaultEndpointId, reconnectState.CurrentEndpointActive, audio.Status.StartsWith("Connected", StringComparison.Ordinal)))
+                    audio.Connect(settings.EndpointId);
+            }
+            if (settings.MonitorLocally) audio.PrepareMonitoring(true, settings.MonitorEndpointId);
         }
         catch (Exception ex) { Log.Warning(ex, "Audio reconnect check failed"); }
     }
